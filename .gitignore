@@ -1,0 +1,13 @@
+.conda/
+runs/
+weights/
+preds/
+train/
+valid/
+test/
+third_party_dinov3/
+.orig_*/
+__pycache__/
+*.pth
+*.log
+nohup.out
