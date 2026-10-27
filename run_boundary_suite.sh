@@ -46,11 +46,17 @@ declare -A FLAGS=(
   [cutmix20]="--fullres_skip --cutmix_p 0.2"
   # Round 4: the two round-3 wins together (4x compute, ~26 GiB per run).
   [color_scale2]="--fullres_skip --color_aug oneof --input_scale 2"
+  # Round 6: color_scale2 plus everything that held up on the aug_color recipe.
+  # Small scans (<= 800 px tall) go to x4 while the rest stay at x2, which is
+  # the scale-2 counterpart of the tested "small scans x2, rest x1".
+  [cs2_plus]="--fullres_skip --color_aug oneof --input_scale 2 --scale_by_height 800:4 --prisi_paste_p 0.25 --fourier_p 0.1 --illumination_p 0.2"
+  # cs2_plus without the x4 small scans, the suspect for its Al3Ni drop.
+  [cs2_aug3]="--fullres_skip --color_aug oneof --input_scale 2 --prisi_paste_p 0.25 --fourier_p 0.1 --illumination_p 0.2"
 )
 ORDER=(fullres relax jml_bls jml interface bdou kervadec abl lovasz
        fullres_b4 fullres_ch64 fullres_lovasz
        aug_d4 aug_color scale15 scale2 thin30 cutmix20
-       color_scale2)
+       color_scale2 cs2_plus cs2_aug3)
 
 if [ $# -gt 0 ]; then METHODS=("$@"); else METHODS=("${ORDER[@]}"); fi
 for m in "${METHODS[@]}"; do

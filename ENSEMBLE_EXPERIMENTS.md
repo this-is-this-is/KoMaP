@@ -5,9 +5,9 @@
 ## 결론
 
 - **추론 설정:** 8방향 TTA + tile 768 + Si 입자 투표. 재학습 없이 77.61% → 78.09% (+0.48pp).
-- **현재 최고 구성:** fullres B3 ×3 seed + B4 = **78.47%**.
-- 같은 계열 모델을 더 넣어도 78.43–78.47%에서 더 오르지 않습니다.
-- 아직 평가하지 않은 것: 3라운드에서 단일 모델 성능이 오른 aug_color(78.21%)와 scale2 모델을 넣은 앙상블.
+- **현재 최고 구성:** color_scale2 ×3 seed = **79.61%** (7절, 2026-10-01 저녁 갱신).
+  color_scale2는 fullres에 aug_color와 배율 2를 함께 적용한 모델입니다.
+- 그 전 최고는 fullres B3 ×3 seed + B4 = 78.47%였고, fullres 계열끼리는 78.43–78.47%에서 포화했습니다.
 
 ## 추론 설정의 세 요소
 
@@ -131,5 +131,32 @@ cd ~/Desktop/komap
   구성 간 비교만 유효합니다.
 - 구성 간 차이가 0.1pp 이하인 것은 구분할 수 없습니다. 단일 모델의 seed 노이즈가 ±0.15pp입니다.
 - `preds/test_ensemble`의 test 예측은 아직 기존 구성(B3 + B4, 반전 TTA, tile 512)입니다.
-- 3라운드 증강 실험의 모델(aug_color, scale2 등)은 이 표에 없습니다. 학습이 끝나면 같은 설정으로
-  평가해 추가해야 합니다.
+- 2절의 표는 3라운드 이전 모델만 다룹니다. aug_color, scale2, color_scale2는 7절에 있습니다.
+
+## 7. 증강 모델을 넣은 앙상블 (2026-10-01 저녁)
+
+`./.conda/bin/python eval_ensembles.py`의 결과입니다(약 3분 30초). 추론 설정은 같고, 배율 2 모델은
+이미지를 2배로 확대해 추론합니다. "개선/하락"은 fullres ×3 + B4 대비 20장 중 이미지 수입니다.
+
+| 구성 | 모델 수 | val mIoU | 차이 | 개선/하락 | Al | Al₃Ni | Eutectic Si | Primary Si |
+|---|---|---|---|---|---|---|---|---|
+| fullres ×3 + B4 (이전 최고) | 4 | 78.47% | – | – | 93.9 | 73.1 | 58.5 | 90.3 |
+| aug_color ×3 | 3 | 78.91% | +0.44 | 15/5 | 94.0 | 74.1 | 58.8 | 90.5 |
+| scale2 ×3 | 3 | 78.99% | +0.51 | 13/7 | 93.8 | 73.6 | 59.6 | 90.9 |
+| aug_color ×3 + scale2 ×3 | 6 | 79.07% | +0.59 | 15/4 | 94.0 | 74.1 | 59.3 | 90.6 |
+| aug_color ×3 + scale2 ×3 + B4 | 7 | 79.08% | +0.60 | 17/2 | 94.0 | 74.1 | 59.4 | 90.7 |
+| **color_scale2 ×3** | 3 | **79.61%** | +1.14 | 17/3 | 94.1 | 74.8 | 60.3 | 91.0 |
+| color_scale2 ×3 + B4 | 4 | 79.47% | +1.00 | 18/2 | 94.1 | 74.6 | 60.1 | 90.9 |
+| color_scale2 ×3 + aug_color ×3 + scale2 ×3 | 9 | 79.37% | +0.89 | 17/3 | 94.1 | 74.4 | 59.9 | 90.9 |
+| 위 9개 + B4 | 10 | 79.32% | +0.85 | 18/2 | 94.1 | 74.4 | 59.9 | 90.8 |
+| fullres ×3 + aug_color ×3 + scale2 ×3 + B4 | 10 | 78.83% | +0.35 | 19/1 | 94.0 | 73.8 | 58.9 | 90.4 |
+
+- 두 방법을 한 모델에 합친 color_scale2가, 따로 학습한 모델을 앙상블로 섞은 것(79.07%)보다 높습니다.
+- color_scale2에 더 약한 모델(B4, aug_color, scale2, fullres)을 섞으면 점수가 내려갑니다.
+- 단일 모델(학습 중 검증, 3 seed 평균): fullres 77.72, aug_color 78.21, scale2 78.21, color_scale2 78.74.
+
+```bash
+./.conda/bin/python predict.py \
+    --ckpt runs/b_color_scale2_s0/best.pth runs/b_color_scale2_s1/best.pth runs/b_color_scale2_s2/best.pth \
+    --split test --tta --d4 --tile 768 --si_vote --save_dir preds/test_color_scale2
+```

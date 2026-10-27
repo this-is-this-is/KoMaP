@@ -4,6 +4,14 @@
 **"원본을 축소하지 않고 512×512 crop으로 학습 → 원본 해상도에서 겹치는 타일로 추론"**
 전략을 기본으로 합니다.
 
+**2026-10-06:** 현재 최고는 MicroNet EfficientNet-B3 6개와 SE-ResNeXt-50 6개를 혼합한 12모델 앙상블
+(8방향 TTA + tile 768 + Si 투표), val **80.41%**입니다. SE-ResNeXt-50만의 3-seed 앙상블도
+60/200 epoch에서 각각 **80.11/80.15%**로 기존 B3 6모델(80.14%)과 동등합니다. 아래 초기 실험 수치와 구분하며,
+전체 경과는 [EXPERIMENTS.md](EXPERIMENTS.md)를 참고하세요.
+새 마스크 조건부 디퓨전의 논문 근거, 학습·생성·대조군 실험과 실행 명령은
+[DIFFUSION_EXPERIMENTS.md](DIFFUSION_EXPERIMENTS.md)에 있습니다. 구현과 GPU 시험 학습은
+완료했고, 새 증강의 분할 성능은 아직 측정하지 않았습니다.
+
 ## 대회 기준
 
 $$\mathrm{Score}=\frac{100}{10}\sum_{i=1}^{10}\Big[\frac14\sum_{c=1}^{4}\frac{TP_{i,c}}{TP_{i,c}+FP_{i,c}+FN_{i,c}}\Big]$$
@@ -13,6 +21,9 @@ $$\mathrm{Score}=\frac{100}{10}\sum_{i=1}^{10}\Big[\frac14\sum_{c=1}^{4}\frac{TP
 ensemble 채택은 **모두 이 이미지별 평균 기준**으로 했습니다. 참고 기준 성능치는 **약 75%**.
 
 ## 결과 (validation 20장)
+
+최신 백본 비교와 상위 앙상블은 [MODEL_EXPERIMENTS.md](MODEL_EXPERIMENTS.md)와
+[EXPERIMENTS.md](EXPERIMENTS.md#313-후속-백본-실험-1056-3-seed)에 정리했습니다. 아래 표는 초기 모델 비교입니다.
 
 | 단계 | 모델 | val mIoU | Al | Al₃Ni | Eutectic Si | Primary Si |
 |---|---|---|---|---|---|---|
@@ -34,7 +45,7 @@ ensemble 채택은 **모두 이 이미지별 평균 기준**으로 했습니다.
 추가하면 오히려 낮아져 제외했습니다. 성능 차가 큰 모델을 넣으면 앙상블을 끌어내립니다.
 테스트 10장은 이 선택에 사용하지 않았습니다.
 
-**2026-10-01 갱신:** 경계 실험 결과 단계 8 구성(78.47%)이 현재 최고입니다(아래
+**2026-10-01 시점:** 경계 실험 결과 단계 8 구성(78.47%)이 당시 최고였습니다(아래
 *경계 정밀도 실험* 참고). `preds/test_ensemble`의 테스트 예측은 아직 이전 구성 그대로입니다.
 
 ### 관찰된 점
@@ -268,27 +279,31 @@ Copy-Paste는 NucleiMix의 문맥 선택에서 착안한 경량 실험이며 dif
 분리된 Si를 잇는 오검출이 늘 수 있어 후순위로 평가합니다. 영상 열화 증강은 모두
 현미경 원본의 회색 강도를 3채널에 동일하게 적용합니다.
 
-GPU가 있는 환경에서 아래 스크립트를 실행하면 각각 B3 fullres 모델 3 seed를 학습하고,
-기존 B4와 앙상블해 **8방향 TTA + 원본 tile 768 + Si 입자 투표**로 valid 20장을
-평가합니다. `runs/a_ensemble_baseline_valid`에는 기존 fullres B3×3 + B4의
-같은 방식 재평가를 저장합니다. 비교 표에는 이미지별 mIoU, Eutectic Si IoU,
+GPU가 있는 환경에서 아래 스크립트를 실행하면 각각 fullres + aug_color(`--color_aug oneof`)
+설정으로 B3 모델 3 seed를 학습하고, 그 3개를 앙상블해 **8방향 TTA + 원본 tile 768 +
+Si 입자 투표**로 valid 20장을 평가합니다. 비교 기준은 `runs/b_aug_color_s{0,1,2}`
+(단일 78.21 ± 0.03, 앙상블 78.91%)이고, `runs/a_ensemble_baseline_valid`에 같은 방식의
+재평가를 저장합니다. 밝기 증강은 약하게 했을 때 +0.49pp였으므로 새 증강은 기존 ±15%
+증강이 아니라 aug_color 위에서 시험합니다. B4는 섞지 않습니다(섞으면 78.91 → 78.84%).
+기본 실행 대상은 조명·흐림·Fourier 세 가지이고, Copy-Paste와 대비 약화는 이름을 지정하면
+돌릴 수 있습니다. 비교 표에는 이미지별 mIoU, Eutectic Si IoU,
 개선된 이미지 수, 여러 GT Si 입자를 잘못 연결한 예측 입자 수를 출력합니다.
 
 ```bash
-./run_augmentation_suite.sh                         # 다섯 단독 증강 × 3 seed + 앙상블 비교
+./run_augmentation_suite.sh                         # 조명·흐림·Fourier × 3 seed + 앙상블 비교
 SEEDS=0 MODE=train ./run_augmentation_suite.sh blur  # 빠른 1-seed 확인
 MODE=eval ./run_augmentation_suite.sh blur           # 3-seed 학습 후 앙상블 평가
 ./run_augmentation_suite.sh imaging_combo            # 단독 실험 후 선택적 조합
 ./.conda/bin/python summarize_augmentation_ensembles.py
 ```
 
-최종 test 예측은 검증에서 선택한 방법의 세 체크포인트와 기존 B4를 사용합니다.
+최종 test 예측은 검증에서 선택한 방법의 세 체크포인트를 사용합니다.
 아래 예시는 `illumination`이 개선된 경우입니다. 검증 전에 test로 증강을 고르지 않습니다.
 
 ```bash
 ./.conda/bin/python predict.py --ckpt \
   runs/a_illumination_s0/best.pth runs/a_illumination_s1/best.pth \
-  runs/a_illumination_s2/best.pth runs/s4_micronet_b4/best.pth \
+  runs/a_illumination_s2/best.pth \
   --split test --tta --d4 --tile 768 --si_vote --save_dir preds/test_illumination
 ```
 
@@ -307,7 +322,21 @@ CPU만 연결된 환경에서는 전체 학습 실행을 막습니다. 작은 �
 | `src/postprocess.py` | Si 입자 투표 (Eutectic/Primary Si를 입자 단위로 통일) |
 | `src/diagnostics.py` | 오류 분해: 경계 위치 오류(≤1px) vs 상 오분류(>5px) |
 | `train_v2.py` | crop 학습 + 원본 이미지 단위 검증 |
+| `prepare_external_microscopy.py` | Zenodo cross-microscope/NASA Super 원본 검증 및 manifest 생성 |
+| `pretrain_cross_microscope.py` | 동일 ROI multi-positive contrastive B3 사전학습 |
+| `pretrain_nasa_super.py` | NASA 3-class full decoder 선택·전체 refit 사전학습 |
+| `run_external_pretraining.py` | MatSSL/동일 ROI/NASA 3경로 화면 실험과 조건부 200-epoch 승격 |
+| `evaluate_external_transfer.py` | 기존 최종 6-model ensemble과 외부 사전학습 모델 비교 |
 | `predict.py` | 채점, 예측 마스크 저장, 다중 체크포인트 ensemble |
+| `run_group_cv.py` | A-ID 5-fold 학습·OOF 추론·90장 최종 학습 오케스트레이션 |
+| `evaluate_multiscale.py` | 멀티스케일/타일 추론 grid와 paired bootstrap 비교 |
+| `audit_oof_labels.py` | OOF 확률로 의심 라벨 영역을 순위화하고 검토 패널 생성 |
+| `GROUP_CV.md` | GroupKFold·멀티스케일·라벨 감사 실행법 |
+| `train_oof_fusion.py` | B3 + SE-ResNeXt OOF residual logit fusion 교차적합·최종 학습 |
+| `predict_logit_fusion.py` | OOF와 동일한 추론 설정으로 base 확률 생성 후 fusion 예측 |
+| `OOF_LOGIT_FUSION.md` | OOF logit fusion의 누수 방지 평가와 실행 명령 |
+| `run_hrnet_kd.py` | B3+SE 12-model 확률 캐시와 HRNet-W18 offline distillation |
+| `DISTILLATION_EXPERIMENTS.md` | teacher/student 구성, KD loss와 실행법 |
 | `run_boundary_suite.sh` | 경계 실험 8종 × 3 seed 일괄 실행 |
 | `summarize_runs.py` | seed 평균 ± sd, baseline 대비 차이와 Welch p |
 | `train.py`, `evaluate.py` | 초기 단순 베이스라인(전체 리사이즈). 비교용으로 유지 |
@@ -330,8 +359,9 @@ CPU만 연결된 환경에서는 전체 학습 실행을 막습니다. 작은 �
 **검증은 crop이 아니라 원본 단위** — 학습만 crop이고, 검증·추론은 항상 원본 전체를
 복원해 점수를 계산합니다.
 
-**crop 분할 금지** — 공식 70/20/10 분할을 그대로 유지했습니다. crop을 만든 뒤 나누면
-같은 원본이 train과 validation에 동시에 들어갑니다.
+**crop 분할 금지** — 기존 실험은 공식 70/20/10 분할을 유지했습니다. 새 90장 교차검증도
+crop이 아니라 원본 스캔을 먼저 나누며, 같은 `A###` 그룹은 한 fold에만 둡니다. crop을
+만든 뒤 나누면 같은 원본이 train과 validation에 동시에 들어가므로 금지합니다.
 
 ## 미구현 / 확인 필요
 
@@ -349,5 +379,6 @@ crop에 4개 상이 모두 포함되어(Primary Si 기준 86.8% → 88.8%), 기�
 ImageNet + MicroNet 사전학습에 의존합니다. 금지라면 `--pretrain none`으로 재학습해야
 하고 점수는 크게 떨어집니다.
 
-**추가 시도 후보** — Lovász-Softmax loss, `--tile 768`, 90장(train+valid) 기반
-GroupKFold 교차검증 후 fold ensemble.
+**GroupKFold 후속 실험** — 90장(train+valid) A-ID 그룹 교차검증, 멀티스케일 추론,
+OOF 라벨 감사는 구현되었습니다. 실행법과 결과물 계약은 [GROUP_CV.md](GROUP_CV.md)를
+참고하세요. 장시간 GPU 학습과 사람의 라벨 판정은 아직 별도 실행이 필요합니다.

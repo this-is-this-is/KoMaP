@@ -31,6 +31,32 @@ def thin_density(mask, cls=2, half_width=2.0, window=64, stride=8):
     return dens[::stride, ::stride].copy(), stride
 
 
+def grid_crop(image, mask, tile, k, teacher=None):
+    """The k-th tile of a fixed grid over the scan, wrapping around.
+
+    The reference for random cropping with no augmentation in it: every epoch
+    sees the same tiles, which together cover the whole scan. Scans smaller
+    than a tile are reflect-padded as the cropper does, and the last row and
+    column sit flush against the far edge.
+    """
+    h, w = mask.shape
+    if h < tile or w < tile:
+        ph, pw = max(0, tile - h), max(0, tile - w)
+        image = np.pad(image, ((0, ph), (0, pw), (0, 0)), mode="reflect")
+        mask = np.pad(mask, ((0, ph), (0, pw)), mode="reflect")
+        if teacher is not None:
+            teacher = np.pad(teacher, ((0, ph), (0, pw), (0, 0)), mode="reflect")
+        h, w = mask.shape
+    ys = sorted({min(y, h - tile) for y in range(0, h, tile)})
+    xs = sorted({min(x, w - tile) for x in range(0, w, tile)})
+    n = k % (len(ys) * len(xs))
+    y, x = ys[n // len(xs)], xs[n % len(xs)]
+    image, mask = image[y:y + tile, x:x + tile], mask[y:y + tile, x:x + tile]
+    if teacher is None:
+        return image, mask
+    return image, mask, teacher[y:y + tile, x:x + tile]
+
+
 class ClassAwareCropper:
     """Crops at the tile size, optionally at a randomised scale.
 
@@ -44,14 +70,17 @@ class ClassAwareCropper:
     """
 
     def __init__(self, tile, num_classes=4, class_ratio=0.5, rng=None,
-                 scale_range=None):
+                 scale_range=None, focus_class=2, focus_ratio=0.0):
         self.tile = tile
         self.num_classes = num_classes
         self.class_ratio = class_ratio
         self.rng = rng or np.random.default_rng()
         self.scale_range = scale_range
+        # A share of crops centred on one phase of interest, whatever its rarity.
+        self.focus_class = focus_class
+        self.focus_ratio = focus_ratio
 
-    def __call__(self, image, mask, thin_map=None):
+    def __call__(self, image, mask, thin_map=None, teacher=None):
         """Crop at the tile size; with a thin_density() map, centre the crop
         where thin lamellae pack densest instead of using the policy below."""
         h, w = mask.shape
@@ -73,6 +102,8 @@ class ClassAwareCropper:
             ph, pw = max(0, t - h), max(0, t - w)
             image = np.pad(image, ((0, ph), (0, pw), (0, 0)), mode="reflect")
             mask = np.pad(mask, ((0, ph), (0, pw)), mode="reflect")
+            if teacher is not None:
+                teacher = np.pad(teacher, ((0, ph), (0, pw), (0, 0)), mode="reflect")
             h, w = mask.shape
 
         y = x = None
@@ -84,6 +115,13 @@ class ClassAwareCropper:
             cx = (k % dens.shape[1]) * stride + int(self.rng.integers(0, stride))
             y = int(np.clip(cy - t // 2, 0, h - t))
             x = int(np.clip(cx - t // 2, 0, w - t))
+
+        if y is None and self.focus_ratio > 0 and self.rng.random() < self.focus_ratio:
+            ys, xs = np.nonzero(mask == self.focus_class)
+            if len(ys):
+                i = self.rng.integers(0, len(ys))
+                y = int(np.clip(int(ys[i]) - t // 2, 0, h - t))
+                x = int(np.clip(int(xs[i]) - t // 2, 0, w - t))
 
         if y is None and self.rng.random() < self.class_ratio:
             # Aim at a class that is actually present, preferring rarer ones.
@@ -106,6 +144,8 @@ class ClassAwareCropper:
             x = int(self.rng.integers(0, w - t + 1))
 
         image, mask = image[y:y + t, x:x + t], mask[y:y + t, x:x + t]
+        if teacher is not None:
+            teacher = teacher[y:y + t, x:x + t]
         if t != self.tile:
             size = (self.tile, self.tile)
             # AREA when shrinking keeps thin lamellae from aliasing away; the
@@ -114,4 +154,8 @@ class ClassAwareCropper:
             interp = cv2.INTER_AREA if t > self.tile else cv2.INTER_LINEAR
             image = cv2.resize(image, size, interpolation=interp)
             mask = cv2.resize(mask, size, interpolation=cv2.INTER_NEAREST)
-        return image, mask
+            if teacher is not None:
+                teacher = cv2.resize(teacher, size, interpolation=cv2.INTER_LINEAR)
+        if teacher is None:
+            return image, mask
+        return image, mask, teacher

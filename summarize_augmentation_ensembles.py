@@ -45,7 +45,7 @@ def main():
         raise SystemExit(f"Missing {base_path}; run MODE=eval ./run_augmentation_suite.sh")
     base = read(base_path)
     base_mean = np.mean([row["miou"] for row in base.values()])
-    print(f"baseline (B3 x3 + B4): {100 * base_mean:.2f}%  ({len(base)} scans), "
+    print(f"baseline (aug_color x3): {100 * base_mean:.2f}%  ({len(base)} scans), "
           f"Si E false bridges: {false_bridges('baseline')}")
     print(f"{'method':20s} {'mIoU':>7s} {'delta':>7s} {'improved':>9s} {'Si E':>7s} {'bridges':>8s}")
     for path in sorted(glob.glob("runs/a_ensemble_*_valid/scores.json")):

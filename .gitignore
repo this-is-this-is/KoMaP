@@ -1,6 +1,10 @@
 .conda/
 runs/
 weights/
+external_data/
+synth/
+.snap/
+.run_*.lock
 preds/
 train/
 valid/

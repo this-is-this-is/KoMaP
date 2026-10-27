@@ -10,6 +10,7 @@ mask (B, H, W) and compute in float32 even under autocast.
     Boundary DoU               Sun et al., MICCAI 2023
     boundary (surface) loss    Kervadec et al., MIDL 2019
     Active Boundary Loss       Wang et al., AAAI 2022
+    edge auxiliary head        binary class-boundary BCE on the shared feature (team E3)
 
 The distance maps the last two need are built on the CPU by the data loader
 (signed_distance / boundary_distance), not inside the training step.
@@ -172,6 +173,27 @@ def boundary_distance(mask):
         return np.zeros(mask.shape, np.float32)
     d = cv2.distanceTransform((~b).astype(np.uint8), cv2.DIST_L2, cv2.DIST_MASK_PRECISE)
     return np.maximum(d - 1, 0).astype(np.float32)
+
+
+def class_boundary(mask, radius=1):
+    """Binary edge target: 1 within `radius` pixels of a change of class.
+
+    A pixel is on the band when its (2r+1)^2 neighbourhood holds more than one
+    class (dilation != erosion of the label map), so a straight interface gets
+    r pixels on each side: radius 1 is the 2 px band of the E3 recipe. Image
+    borders are not edges.
+    """
+    k = np.ones((2 * radius + 1, 2 * radius + 1), np.uint8)
+    m = mask.astype(np.uint8)
+    return (cv2.dilate(m, k) != cv2.erode(m, k)).astype(np.float32)
+
+
+def balanced_bce(logits, target):
+    """BCE with positives up-weighted by the batch's negative/positive pixel ratio."""
+    logits, target = logits.float(), target.float()
+    pos = target.sum()
+    pos_weight = ((target.numel() - pos) / pos.clamp_min(1.0)).detach()
+    return F.binary_cross_entropy_with_logits(logits, target, pos_weight=pos_weight)
 
 
 def _kl(a, b):

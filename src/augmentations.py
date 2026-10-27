@@ -151,3 +151,118 @@ def attenuate_connected_si(image, mask, rng, scale=1.0):
     out = image.copy()
     out[y0:y1, x0:x1] = _gray_rgb(patch * (1 - alpha) + background * alpha)
     return out
+
+
+def particle_bank(mask, cls=3, scale=1.0, halo=3, min_area=150, max_side=160, min_matrix=0.8):
+    """Primary Si particles of one scan that can be moved elsewhere in it.
+
+    A particle qualifies if it is whole (its halo stays inside the scan), not
+    larger than max_side native pixels, and at least min_matrix of its
+    halo-pixel ring is Al, so that pasting particle + ring puts a real
+    particle edge next to matrix rather than a slice of a neighbouring phase.
+    Returns [(y0, x0, footprint)], the footprint being particle + ring.
+    """
+    h, w = mask.shape
+    r = max(1, int(round(halo * scale)))
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
+    count, labels, stats, _ = cv2.connectedComponentsWithStats((mask == cls).astype(np.uint8), 8)
+    bank = []
+    for i in range(1, count):
+        x, y, bw, bh, area = stats[i]
+        if area < min_area * scale * scale or max(bw, bh) > max_side * scale:
+            continue
+        y0, x0, y1, x1 = y - r, x - r, y + bh + r, x + bw + r
+        if y0 < 0 or x0 < 0 or y1 > h or x1 > w:
+            continue
+        particle = labels[y0:y1, x0:x1] == i
+        footprint = cv2.dilate(particle.astype(np.uint8), kernel) > 0
+        ring = footprint & ~particle
+        if np.mean(mask[y0:y1, x0:x1][ring] == 0) < min_matrix:
+            continue
+        bank.append((int(y0), int(x0), footprint))
+    return bank
+
+
+def paste_particle(image, mask, scan_image, scan_mask, bank, rng, candidates=16):
+    """Move one Primary Si particle, with its matrix ring, to a new place in the crop.
+
+    Instance copy-paste in the spirit of Simple Copy-Paste / NucleiMix, cut to
+    this data: the particle comes from the same scan (same exposure and
+    magnification), keeps its true outline and edge profile, and is turned
+    only by the 8 rotations/reflections -- never rescaled, because size is
+    what separates Primary from Eutectic Si. Among a few random positions the
+    one whose footprint covers the most matrix is used, so the ring lands on
+    Al where it can.
+    """
+    y0, x0, footprint = bank[int(rng.integers(len(bank)))]
+    fh, fw = footprint.shape
+    src_image = scan_image[y0:y0 + fh, x0:x0 + fw]
+    src_mask = scan_mask[y0:y0 + fh, x0:x0 + fw]
+    k = int(rng.integers(8))
+    turn = lambda a: np.rot90(a[:, ::-1] if k >= 4 else a, k % 4)
+    footprint, src_image, src_mask = turn(footprint), turn(src_image), turn(src_mask)
+    fh, fw = footprint.shape
+    h, w = mask.shape
+    if fh >= h or fw >= w:
+        return image, mask
+    best = None
+    for _ in range(candidates):
+        y = int(rng.integers(0, h - fh + 1))
+        x = int(rng.integers(0, w - fw + 1))
+        matrix = float(np.mean(mask[y:y + fh, x:x + fw][footprint] == 0))
+        if best is None or matrix > best[0]:
+            best = (matrix, y, x)
+    _, y, x = best
+    image, mask = image.copy(), mask.copy()
+    image[y:y + fh, x:x + fw][footprint] = src_image[footprint]
+    mask[y:y + fh, x:x + fw][footprint] = src_mask[footprint]
+    return image, mask
+
+
+def phase_levels(image, mask, si=2, matrix=0):
+    """(Eutectic Si median gray, Al median gray) of one scan, or None if either is absent."""
+    gray = image[..., 0]
+    if not (mask == si).any() or not (mask == matrix).any():
+        return None
+    return float(np.median(gray[mask == si])), float(np.median(gray[mask == matrix]))
+
+
+def darken_al3ni(image, mask, levels, rng, scale=1.0, cls=1, share=0.5, alpha_range=(0.5, 1.0),
+                 min_area=100, skip_below=0.15):
+    """Pull some Al3Ni regions down toward the scan's Eutectic Si gray level.
+
+    The models tell Al3Ni from Eutectic Si mostly by brightness: the Al3Ni they
+    call Eutectic Si sits at the Eutectic Si gray level of its scan, while the
+    Al3Ni they get right is 20-50 levels brighter. That dark kind is about 5%
+    of Al3Ni pixels in train and valid alike. Darkening whole regions -- shape,
+    texture and mask kept -- leaves shape as the cue. It is SynthSeg's
+    per-label intensity idea cut down to one class and one direction, since
+    brightness is still the main cue between the other phases.
+
+    Each Al3Ni region of at least min_area native pixels is picked with
+    probability share and shifted down by alpha x (its median - Eutectic Si
+    median). Regions already within skip_below of the Eutectic Si level, on
+    the Eutectic Si -> Al gray axis, are left alone. The shift fades out over
+    the outer native pixel, so annotated edge pixels keep their gray and no
+    new edge appears; pixels of other classes are never changed.
+    """
+    eut, matrix = levels
+    span = max(matrix - eut, 1.0)
+    gray = image[..., 0]
+    count, labels, stats, _ = cv2.connectedComponentsWithStats((mask == cls).astype(np.uint8), 8)
+    shift = np.zeros(mask.shape, np.float32)
+    for i in range(1, count):
+        x, y, w, h, area = stats[i]
+        if area < min_area * scale * scale or rng.random() >= share:
+            continue
+        region = labels[y:y + h, x:x + w] == i
+        level = float(np.median(gray[y:y + h, x:x + w][region]))
+        if (level - eut) / span < skip_below:
+            continue
+        shift[y:y + h, x:x + w][region] = float(rng.uniform(*alpha_range)) * (level - eut)
+    if not shift.any():
+        return image
+    r = max(1, int(round(scale)))
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
+    shift = cv2.GaussianBlur(cv2.erode(shift, kernel), (0, 0), sigmaX=scale) * (mask == cls)
+    return _gray_rgb(gray.astype(np.float32) - shift)
